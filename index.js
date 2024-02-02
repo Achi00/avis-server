@@ -2,9 +2,12 @@ require("dotenv").config();
 const cors = require("cors");
 const express = require("express");
 const mysql = require("mysql2");
+const EventEmitter = require("events");
 
 const app = express();
 const port = 8080;
+
+const userUpdateEmitter = new EventEmitter();
 
 app.use(cors());
 app.use(express.json());
@@ -71,17 +74,43 @@ app.get("/search-users", (req, res) => {
 });
 
 // This route expects to receive the user's ID and the chosen interest
-app.post("/update-interest", (req, res) => {
-  const { id, value } = req.body; // Use 'id' to identify the user and 'value' for the new interest
+// app.post("/update-interest", (req, res) => {
+//   const { id, value } = req.body; // Use 'id' to identify the user and 'value' for the new interest
 
-  if (!id || !value) {
-    return res.status(400).send("User ID and interest are required.");
+//   if (!id || !value) {
+//     return res.status(400).send("User ID and interest are required.");
+//   }
+
+//   const sql = "UPDATE random_names_with_id SET value = ? WHERE id = ?"; // Use 'id' to identify the record
+
+//   pool.query(sql, [value, id], (error, results) => {
+//     // Ensure the parameters are in the correct order
+//     if (error) {
+//       console.error("Error updating user interest:", error);
+//       return res
+//         .status(500)
+//         .send("An error occurred while updating user interest.");
+//     }
+
+//     if (results.affectedRows === 0) {
+//       return res.status(404).send("User not found.");
+//     }
+
+//     res.status(200).send("Interest updated successfully.");
+//   });
+// });
+
+// update value in database
+app.patch("/users/:id", (req, res) => {
+  const { id } = req.params;
+  const { value } = req.body;
+
+  if (!value) {
+    return res.status(400).send("Interest value is required.");
   }
 
-  const sql = "UPDATE random_names_with_id SET value = ? WHERE id = ?"; // Use 'id' to identify the record
-
+  const sql = "UPDATE random_names_with_id SET value = ? WHERE id = ?";
   pool.query(sql, [value, id], (error, results) => {
-    // Ensure the parameters are in the correct order
     if (error) {
       console.error("Error updating user interest:", error);
       return res
@@ -93,10 +122,43 @@ app.post("/update-interest", (req, res) => {
       return res.status(404).send("User not found.");
     }
 
+    // Emit an event indicating that user data has been updated
+    userUpdateEmitter.emit("update");
+
     res.status(200).send("Interest updated successfully.");
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+// SSE endpoint to listen for updates
+app.get("/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const sendHeartbeat = () => res.write(": ping\n\n");
+  const heartbeatInterval = setInterval(sendHeartbeat, 15000);
+
+  const sendUpdate = () => res.write("data: update\n\n");
+  userUpdateEmitter.on("update", sendUpdate);
+
+  req.on("close", () => {
+    clearInterval(heartbeatInterval);
+    userUpdateEmitter.removeListener("update", sendUpdate);
+  });
+});
+
+// users who choose value
+app.get("/users-with-interest", (req, res) => {
+  const sql = "SELECT * FROM random_names_with_id WHERE value IS NOT NULL";
+
+  pool.query(sql, (error, results) => {
+    if (error) {
+      console.error("Error fetching users with interests:", error);
+      return res
+        .status(500)
+        .send("An error occurred while fetching users with interests.");
+    }
+
+    res.json(results);
+  });
 });
